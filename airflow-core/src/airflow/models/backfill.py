@@ -23,6 +23,7 @@ Internal classes for management of dag backfills.
 
 from __future__ import annotations
 
+import copy
 import logging
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -43,7 +44,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy_jsonfield import JSONField
 
 from airflow._shared.timezones import timezone
-from airflow.exceptions import AirflowException, DagNotFound
+from airflow.exceptions import AirflowException, DagNotFound, ParamValidationError
 from airflow.models.base import Base, StringID
 from airflow.settings import json
 from airflow.utils.session import create_session
@@ -261,8 +262,10 @@ def _validate_backfill_params(
         raise InvalidBackfillDate("Backfill cannot be executed for future dates.")
     if dag_run_conf is not None:
         try:
-            dag.params.deep_merge(dag_run_conf).validate()
-        except ValueError as e:
+            copied_params = copy.deepcopy(dag.params)
+            copied_params.update(dag_run_conf)
+            copied_params.validate()
+        except (ParamValidationError, ValueError) as e:
             raise InvalidBackfillConf(str(e)) from e
 
 
