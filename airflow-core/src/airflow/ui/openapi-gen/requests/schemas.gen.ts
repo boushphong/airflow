@@ -405,10 +405,16 @@ export const $BackfillPostBody = {
             default: false
         },
         dag_run_conf: {
-            additionalProperties: true,
-            type: 'object',
-            title: 'Dag Run Conf',
-            default: {}
+            anyOf: [
+                {
+                    additionalProperties: true,
+                    type: 'object'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Dag Run Conf'
         },
         reprocess_behavior: {
             '$ref': '#/components/schemas/ReprocessBehavior',

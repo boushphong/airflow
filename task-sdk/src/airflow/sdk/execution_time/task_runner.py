@@ -778,6 +778,14 @@ def startup() -> tuple[RuntimeTaskInstance, Context, Logger]:
         if not isinstance(msg, StartupDetails):
             raise RuntimeError(f"Unhandled startup message {type(msg)} {msg}")
 
+        # On the macOS fork+exec path, the structured log channel wasn't
+        # inherited (exec replaces the address space). Request it from the
+        # supervisor using the existing ResendLoggingFD mechanism.
+        # This must happen after reading the startup message so it isn't
+        # mistaken for a ResendLoggingFD response.
+        if os.environ.pop("_AIRFLOW_FORK_EXEC", None) == "1":
+            reinit_supervisor_comms()
+
     # setproctitle causes issue on Mac OS: https://github.com/benoitc/gunicorn/issues/3021
     os_type = sys.platform
     if os_type == "darwin":

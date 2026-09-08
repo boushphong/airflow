@@ -23,6 +23,7 @@ Internal classes for management of dag backfills.
 
 from __future__ import annotations
 
+import copy
 import logging
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -43,7 +44,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy_jsonfield import JSONField
 
 from airflow._shared.timezones import timezone
-from airflow.exceptions import AirflowException, DagNotFound
+from airflow.exceptions import AirflowException, DagNotFound, ParamValidationError
 from airflow.models.base import Base, StringID
 from airflow.settings import json
 from airflow.utils.session import create_session
@@ -95,6 +96,14 @@ class InvalidReprocessBehavior(AirflowException):
 class InvalidBackfillDate(AirflowException):
     """
     Raised when a backfill is requested for future date.
+
+    :meta private:
+    """
+
+
+class InvalidBackfillConf(AirflowException):
+    """
+    Raised when the provided ``dag_run_conf`` fails validation against the DAG's params.
 
     :meta private:
     """
@@ -229,7 +238,14 @@ def _get_dag_run_no_create_reason(dr, reprocess_behavior: ReprocessBehavior) -> 
     return non_create_reason
 
 
-def _validate_backfill_params(dag, reverse, from_date, to_date, reprocess_behavior: ReprocessBehavior | None):
+def _validate_backfill_params(
+    dag,
+    reverse,
+    from_date,
+    to_date,
+    reprocess_behavior: ReprocessBehavior | None,
+    dag_run_conf: dict | None = None,
+):
     depends_on_past = any(x.depends_on_past for x in dag.tasks)
     if depends_on_past:
         if reverse is True:
@@ -244,6 +260,13 @@ def _validate_backfill_params(dag, reverse, from_date, to_date, reprocess_behavi
     current_time = timezone.utcnow()
     if from_date >= current_time and to_date >= current_time:
         raise InvalidBackfillDate("Backfill cannot be executed for future dates.")
+    if dag_run_conf is not None:
+        try:
+            copied_params = copy.deepcopy(dag.params)
+            copied_params.update(dag_run_conf)
+            copied_params.validate()
+        except (ParamValidationError, ValueError) as e:
+            raise InvalidBackfillConf(str(e)) from e
 
 
 def _do_dry_run(*, dag_id, from_date, to_date, reverse, reprocess_behavior, session) -> list[datetime]:
@@ -330,6 +353,7 @@ def _create_backfill_dag_run(
                     backfill_id=backfill_id,
                     sort_ordinal=backfill_sort_ordinal,
                     run_on_latest=run_on_latest_version,
+                    dag_run_conf=dag_run_conf,
                 )
             else:
                 session.add(
@@ -403,7 +427,9 @@ def _get_info_list(
     return dagrun_info_list
 
 
-def _handle_clear_run(session, dag, dr, info, backfill_id, sort_ordinal, run_on_latest=False):
+def _handle_clear_run(
+    session, dag, dr, info, backfill_id, sort_ordinal, run_on_latest=False, dag_run_conf=None
+):
     """Clear the existing DAG run and update backfill metadata."""
     from sqlalchemy.sql import update
 
@@ -419,8 +445,8 @@ def _handle_clear_run(session, dag, dr, info, backfill_id, sort_ordinal, run_on_
         run_on_latest_version=run_on_latest,
     )
 
-    # Update backfill_id and run_type in DagRun table
-    session.execute(
+    # Update backfill_id, run_type, and optionally conf in DagRun table
+    stmt = (
         update(DagRun)
         .where(DagRun.logical_date == info.logical_date, DagRun.dag_id == dag.dag_id)
         .values(
@@ -429,6 +455,9 @@ def _handle_clear_run(session, dag, dr, info, backfill_id, sort_ordinal, run_on_
             triggered_by=DagRunTriggeredByType.BACKFILL,
         )
     )
+    if dag_run_conf is not None:
+        stmt = stmt.values(conf=dag_run_conf)
+    session.execute(stmt)
     session.add(
         BackfillDagRun(
             backfill_id=backfill_id,
@@ -477,7 +506,7 @@ def _create_backfill(
             )
 
         dag = serdag.dag
-        _validate_backfill_params(dag, reverse, from_date, to_date, reprocess_behavior)
+        _validate_backfill_params(dag, reverse, from_date, to_date, reprocess_behavior, dag_run_conf)
 
         br = Backfill(
             dag_id=dag_id,
