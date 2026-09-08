@@ -2549,12 +2549,21 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                     ti,
                 )
                 continue
+            # ti.task isn't loaded in this purge path, so is_eligible_to_retry() uses its
+            # no-task fallback (``try_number <= max_tries``), which skips the retries-configured
+            # check its task-loaded branch applies; guard with ``max_tries > 0`` so a task
+            # declared with retries=0 isn't treated as retry-eligible here.
+            if ti.max_tries > 0 and ti.is_eligible_to_retry():
+                task_callback_type = TaskInstanceState.UP_FOR_RETRY
+            else:
+                task_callback_type = TaskInstanceState.FAILED
             request = TaskCallbackRequest(
                 filepath=ti.dag_model.relative_fileloc,
                 bundle_name=ti.dag_version.bundle_name,
                 bundle_version=ti.dag_run.bundle_version,
                 ti=ti,
                 msg=str(task_instance_heartbeat_timeout_message_details),
+                task_callback_type=task_callback_type,
                 context_from_server=TIRunContext(
                     dag_run=DRDataModel.model_validate(ti.dag_run, from_attributes=True),
                     max_tries=ti.max_tries,
